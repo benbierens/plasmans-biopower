@@ -24,43 +24,52 @@ unsigned long millisecondsElapsed = 0;
 int rpmLastState = 0;
 int rpmResult = 0;
 int rpmCount = 0;
+const byte interruptPin = 2;
+volatile byte state = LOW;
+const byte ledPin = 13;
 
 void setup()
 {
-  Serial.begin(115200);
+  // Serial.begin(115200);
   pinMode(potentio,INPUT);
   // pinMode(o2,INPUT);
   servoAf.attach(servoAirFuel);
   servoT.attach(servoThrottle);
 
   pinMode(rpmMeter, INPUT);
+  attachInterrupt(digitalPinToInterrupt(interruptPin), blink, RISING);
+  pinMode(ledPin, OUTPUT);
 
   delay(3000);
 
   servoAf.writeMicroseconds(1512); // sets air/fuel to 50%
 }
 
-void processTick()
-{
-  now = millis();
-  if (lastTime == 0)
-  {
-    lastTime = now;
-    return;
-  }
-
-  millisecondsElapsed = now - lastTime;
-  lastTime = now;
-
-  rpmResult = (250 / millisecondsElapsed) * 240) / 16;
-  rpmCount++;
-  if (rpmCount  > 9)
-  {
-    rpmCount = 0;
-    Serial.print("rpm:");
-    Serial.println(rpmResult);
-  }
+void blink() {
+  state = !state;
 }
+
+// void processTick()
+// {
+//   now = millis();
+//   if (lastTime == 0)
+//   {
+//     lastTime = now;
+//     return;
+//   }
+
+//   millisecondsElapsed = now - lastTime;
+//   lastTime = now;
+
+//   rpmResult = (250 / millisecondsElapsed) * 240) / 16;
+//   rpmCount++;
+//   if (rpmCount  > 9)
+//   {
+//     rpmCount = 0;
+//     Serial.print("rpm:");
+//     Serial.println(rpmResult);
+//   }
+// }
 
 void loop()
 {
@@ -68,26 +77,28 @@ void loop()
   angle=map(potval,0,1024,1308,2268);
   servoT.writeMicroseconds(angle);
 
-  rpmValue = analogRead(rpmMeter);
-  if (rpmValue < 200) // gap in detector
-  {
-    if (rpmLastState == 0)
-    {
-      rpmLastState = 1;
-      processTick();
-    }
-  } 
-  else
-  {
-    rpmLastState = 0;
-  } 
+  digitalWrite(ledPin, state);
+
+  // rpmValue = analogRead(rpmMeter);
+  // if (rpmValue < 200) // gap in detector
+  // {
+  //   if (rpmLastState == 0)
+  //   {
+  //     rpmLastState = 1;
+  //     processTick();
+  //   }
+  // } 
+  // else
+  // {
+  //   rpmLastState = 0;
+  // } 
 }
 
 
 
 
 
-
+/*
 myservo.writeMicroseconds(X)
 
 luchtbrandstof: pin 10 - "ser1"
@@ -113,3 +124,4 @@ max 4000 RPM
 66.66667 Rpsecond
 1067 signals per second
 
+*/
