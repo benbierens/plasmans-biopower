@@ -11,6 +11,8 @@ Servo servoT;
 #define CLOSED 870 //was 1670
 #define HOLD_MIN 1080
 #define HOLD_MAX 1220
+#define NUMBEROFGAPS 16.0f
+#define MINMILLISECONDSPERGAP 0.83f
 
 int angle,potval=0;
 int openValue=0;
@@ -18,58 +20,47 @@ int closeValue=0;
 int actualValue,targetValue=0;
 int inertia=16;// change this parrameter. Higher the value, the slower the servo rotation speed
 int rpmValue = 0;
-unsigned long lastTime = 0;
-unsigned long now = 0;
-unsigned long millisecondsElapsed = 0;
+float lastNow = 0.0f;
+float now = 0.0f;
+float millisecondsElapsed = 0.0f;
 int rpmLastState = 0;
-int rpmResult = 0;
+float rpmResult = 0.0f;
 int rpmCount = 0;
 const byte interruptPin = 2;
-volatile byte state = LOW;
-const byte ledPin = 13;
+volatile unsigned int gapCounter = 0;
+float gapCount = 0.0f;
+float lastGapMillis = 0.0f;
 
 void setup()
 {
-  // Serial.begin(115200);
+  Serial.begin(115200);
   pinMode(potentio,INPUT);
   // pinMode(o2,INPUT);
   servoAf.attach(servoAirFuel);
   servoT.attach(servoThrottle);
 
   pinMode(rpmMeter, INPUT);
-  attachInterrupt(digitalPinToInterrupt(interruptPin), blink, RISING);
-  pinMode(ledPin, OUTPUT);
+  pinMode(interruptPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(interruptPin), onGapSignal, RISING); // 198 - 196
 
   delay(3000);
+  rpmCount = 0;
 
   servoAf.writeMicroseconds(1512); // sets air/fuel to 50%
+  lastNow = millis();
+  lastGapMillis = millis();
+  now = lastNow;
+  gapCounter = 0;
 }
 
-void blink() {
-  state = !state;
+void onGapSignal()
+{
+  //float n = millis();
+  //if ((n - lastGapMillis) < MINMILLISECONDSPERGAP) return;7
+
+  gapCounter++;
+  //lastGapMillis = n;
 }
-
-// void processTick()
-// {
-//   now = millis();
-//   if (lastTime == 0)
-//   {
-//     lastTime = now;
-//     return;
-//   }
-
-//   millisecondsElapsed = now - lastTime;
-//   lastTime = now;
-
-//   rpmResult = (250 / millisecondsElapsed) * 240) / 16;
-//   rpmCount++;
-//   if (rpmCount  > 9)
-//   {
-//     rpmCount = 0;
-//     Serial.print("rpm:");
-//     Serial.println(rpmResult);
-//   }
-// }
 
 void loop()
 {
@@ -77,51 +68,28 @@ void loop()
   angle=map(potval,0,1024,1308,2268);
   servoT.writeMicroseconds(angle);
 
-  digitalWrite(ledPin, state);
+  delay(1000);
 
-  // rpmValue = analogRead(rpmMeter);
-  // if (rpmValue < 200) // gap in detector
-  // {
-  //   if (rpmLastState == 0)
-  //   {
-  //     rpmLastState = 1;
-  //     processTick();
-  //   }
-  // } 
-  // else
-  // {
-  //   rpmLastState = 0;
-  // } 
-}
+  now = millis();
+  millisecondsElapsed = now - lastNow;
+  gapCount = gapCounter;
+  lastNow = now;
+  gapCounter = 0;
 
+  rpmResult = (60.0f * (gapCount * (100000.0f / millisecondsElapsed))) / NUMBEROFGAPS;
 
-
-
-
-/*
-myservo.writeMicroseconds(X)
-
-luchtbrandstof: pin 10 - "ser1"
-Open:  861
-Dicht: 2164
+  //rpmCount++;
+  //if (rpmCount > 0)
+  //{
+    //rpmCount = 0;
+    Serial.print("d-gaps:");
+    Serial.print(gapCount);
+    Serial.print("-ms:");
+    Serial.print(millisecondsElapsed);
+    Serial.print("-rpm:");
+    Serial.println(rpmResult / 100);
+  //}
+} //189 - 192
 
 
-throttle:	pin 9 - "ser2"
-open:  2268
-dicht: 1308
 
-
-A1 = input: toerenteller
-
-dicht => 990
-gat   =>   0
-
-
-16x voor 1 ronde
-1000 -> 0 -> 1000
-
-max 4000 RPM
-66.66667 Rpsecond
-1067 signals per second
-
-*/
