@@ -9,7 +9,7 @@ Servo servoT;
 // Program loop speed: milliseconds per loop
 #define targetLoopTimeMilliseconds 100
 #define loopTimeTolerance 2
-#define debugPrintEveryN 10
+#define debugPrintEveryN 5
 
 // Automatic RPM control:
 #define targetRPM 800.0f
@@ -147,7 +147,7 @@ void calculateRpm()
   gapCount = gapCounter;
   gapCounter = 0;
 
-  rpmResult = (60.0f * (gapCount * (100000.0f / millisecondsElapsed))) / NUMBEROFGAPS;
+  rpmResult = (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NUMBEROFGAPS;
 }
 
 void loopDelay()
@@ -184,7 +184,7 @@ void manualThrottleControl()
 void automaticThrottleControl()
 {
   ledOff();
-
+// 15.5 - 16
   calculateRpm();
 
   if (rpmResult > RPMEmergencyStopThreshold)
@@ -216,7 +216,7 @@ void automaticThrottleControl()
 // value | volts | lambda
 //     0 |  0.0v 
 //   102 |  0.5v |  0.58
-//       |  3.0v |  0.99
+//   614 |  3.0v |  0.99
 //   922 |  4.5v |  1.23
 //  1024 |  5.0v
 const float c = -629.692f;
@@ -227,23 +227,32 @@ void updateAirFuelRatio()
 {
   o2Value = analogRead(o2sensor);
 
-  if (o2Value > (targetAsValue + airFuelValueTolerance))
+  // sensor in error? set 50/50 ratio:
+  if (o2Value < 110 || o2Value > 920)
   {
-    automaticAirFuelValue += airFuelAdjustStep;
-    debugAdjustAFR--;
-    if (automaticAirFuelValue > airFuelClosedValue) automaticAirFuelValue = airFuelClosedValue;
-  }
-  else if (o2Value < (targetAsValue - airFuelValueTolerance))
-  {
-    automaticAirFuelValue -= airFuelAdjustStep;
-    debugAdjustAFR++;
-    if (automaticAirFuelValue < airFuelOpenValue) automaticAirFuelValue = airFuelOpenValue;
+    automaticAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
   }
   else
   {
-    return;
+    if (o2Value > (targetAsValue + airFuelValueTolerance))
+    {
+      automaticAirFuelValue -= airFuelAdjustStep;
+      debugAdjustAFR--;
+    }
+    else if (o2Value < (targetAsValue - airFuelValueTolerance))
+    {
+      automaticAirFuelValue += airFuelAdjustStep;
+      debugAdjustAFR++;
+      
+    }
+    else
+    {
+      return;
+    }
   }
 
+  if (automaticAirFuelValue < airFuelOpenValue) automaticAirFuelValue = airFuelOpenValue;
+  if (automaticAirFuelValue > airFuelClosedValue) automaticAirFuelValue = airFuelClosedValue;
   servoAf.writeMicroseconds(automaticAirFuelValue);
 }
 
@@ -262,6 +271,9 @@ void loop()
   loopDelay();
 
   updateAirFuelRatio();
+  // for testing:
+  calculateRpm();
+
   manualThrottleControl();
 
   if (debugPrintEveryN > 0)
@@ -274,17 +286,19 @@ void loop()
       Serial.print("o2Value:");
       Serial.print(o2Value);
       Serial.print(" - rpmResult:");
-      Serial.print(rpmResult);
-      Serial.print(" - automaticThrottleValue:");
-      Serial.print(automaticThrottleValue);
-      Serial.print(" - automaticAirFuelValue:");
-      Serial.print(automaticAirFuelValue);
-      Serial.print(" - automaticDelay:");
-      Serial.print(automaticDelay);
-      Serial.print(" - debugAdjustRPM:");
-      Serial.print(debugAdjustRPM);
-      Serial.print(" - debugAdjustAFR:");
-      Serial.println(debugAdjustAFR);
+      Serial.println(rpmResult);
+      // Serial.print(" - automaticThrottleValue:");
+      // Serial.print(automaticThrottleValue);
+      // Serial.print(" - automaticAirFuelValue:");
+      // Serial.print(automaticAirFuelValue);
+      // Serial.print(" - automaticDelay:");
+      // Serial.print(automaticDelay);
+      // Serial.print(" - debugAdjustRPM:");
+      // Serial.print(debugAdjustRPM);
+      // Serial.print(" - debugAdjustAFR:");
+      // Serial.println(debugAdjustAFR);
     }
   }
+
+  //3600 rpm
 }
