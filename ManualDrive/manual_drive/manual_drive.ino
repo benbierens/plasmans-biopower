@@ -8,6 +8,7 @@ Servo servoT;
 // Configuration:
 // Program loop speed: milliseconds per loop
 #define targetLoopTimeMilliseconds 100
+#define loopTimeTolerance 2
 #define debugPrintEveryN 10
 
 // Automatic RPM control:
@@ -44,7 +45,6 @@ Servo servoT;
 #define MINMILLISECONDSPERGAP 0.83f
 
 int errorCode = 0;
-int loopOvertimeCounter = 0;
 bool ledState = false;
 int angle, potValue = 0;
 int o2angle, o2Value = 0;
@@ -58,6 +58,7 @@ const byte interruptPin = 2;
 volatile unsigned int gapCounter = 0;
 float gapCount = 0.0f;
 float lastGapMillis = 0.0f;
+int automaticDelay = 100;
 int automaticThrottleValue = 0;
 int automaticAirFuelValue = 0;
 int debugPrintCounter = 0;
@@ -97,7 +98,7 @@ void errorState(int error)
 void startupDelay()
 {
   int i = 0;
-  while (i < 5)
+  while (i < 10)
   {
     delay(300);
     i++;
@@ -154,17 +155,21 @@ void loopDelay()
   // the number of milliseconds a loop should take is very likely greater than
   // the time it did take. So, sleep the difference.
   // If the millisecondsElapsed is consistently greater than the target loop duration, enter error state.
-  if (millisecondsElapsed > targetLoopTimeMilliseconds)
+  if (millisecondsElapsed > (targetLoopTimeMilliseconds + loopTimeTolerance))
   {
-    loopOvertimeCounter++;
-    if (loopOvertimeCounter > 5)
-    {
-      errorState(ERRORCODE_LOOP_OVER_TIME);
-    }
+    automaticDelay--;
   }
-  loopOvertimeCounter = 0;
+  else if (millisecondsElapsed < (targetLoopTimeMilliseconds - loopTimeTolerance))
+  {
+    automaticDelay++;
+  }
 
-  delay(targetLoopTimeMilliseconds - millisecondsElapsed);
+  if (automaticDelay < 10)
+  {
+    errorState(ERRORCODE_LOOP_OVER_TIME);
+  }
+
+  delay(automaticDelay);
 }
 
 void manualThrottleControl()
@@ -274,6 +279,8 @@ void loop()
       Serial.print(automaticThrottleValue);
       Serial.print(" - automaticAirFuelValue:");
       Serial.print(automaticAirFuelValue);
+      Serial.print(" - automaticDelay:");
+      Serial.print(automaticDelay);
       Serial.print(" - debugAdjustRPM:");
       Serial.print(debugAdjustRPM);
       Serial.print(" - debugAdjustAFR:");
