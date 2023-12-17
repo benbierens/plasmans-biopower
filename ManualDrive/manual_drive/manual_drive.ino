@@ -12,8 +12,8 @@ Servo servoT;
 #define debugPrintEveryN 5
 
 // Automatic RPM control:
-#define targetRPM 800.0f
-#define RPMEmergencyStopThreshold 1500.0f
+#define targetRPM 1500.0f
+#define RPMEmergencyStopThreshold 2500.0f
 #define RPMAutomaticAdjustStep 1
 #define targetRPMTolerance 5.0f
 
@@ -181,34 +181,81 @@ void manualThrottleControl()
   servoT.writeMicroseconds(angle);
 }
 
+int numTooHigh = 0;
+int i = 0;
+
 void automaticThrottleControl()
 {
   ledOff();
 // 15.5 - 16
   calculateRpm();
 
-  if (rpmResult > RPMEmergencyStopThreshold)
+  
+  Serial.print("rpm:");
+  Serial.print(rpmResult);
+
+  i++;
+  if (i >= 10)
   {
-    servoT.writeMicroseconds(throttleClosedValue);
-    errorState(ERRORCODE_RPM_EMERGENCY_STOP);
-  }
-  else if (rpmResult > (targetRPM + targetRPMTolerance))
-  {
-    automaticThrottleValue -= RPMAutomaticAdjustStep;
-    debugAdjustRPM--;
-    if (automaticThrottleValue < throttleClosedValue) automaticThrottleValue = throttleClosedValue;
-  }
-  else if (rpmResult < (targetRPM - targetRPMTolerance))
-  {
-    automaticThrottleValue += RPMAutomaticAdjustStep;
-    debugAdjustRPM++;
-    if (automaticThrottleValue > throttleOpenValue) automaticThrottleValue = throttleOpenValue;
+    i = 0;
+    if (rpmResult < 2)
+    {
+      Serial.println("*");
+      return;
+    }
   }
   else
   {
+    Serial.println("*");
     return;
   }
 
+  if (rpmResult > RPMEmergencyStopThreshold)
+  {
+    Serial.println("-toohigh");
+    automaticThrottleValue -= (RPMAutomaticAdjustStep * 60);
+    numTooHigh++;
+    if (numTooHigh > 5)
+    {
+      servoT.writeMicroseconds(throttleClosedValue);
+      errorState(ERRORCODE_RPM_EMERGENCY_STOP);
+    }
+  }
+  else if (rpmResult > (targetRPM + 500 + targetRPMTolerance))
+  {
+    Serial.println("-!");
+    automaticThrottleValue -= (RPMAutomaticAdjustStep * 2);
+    debugAdjustRPM--;
+  }
+  else if (rpmResult < (targetRPM - 500 - targetRPMTolerance))
+  {
+    Serial.println("+!");
+    automaticThrottleValue += (RPMAutomaticAdjustStep);
+    debugAdjustRPM++;
+  }
+  else if (rpmResult > (targetRPM + targetRPMTolerance))
+  {
+    Serial.println("-");
+    automaticThrottleValue -= RPMAutomaticAdjustStep;
+    debugAdjustRPM--;
+    numTooHigh = 0;
+  }
+  else if (rpmResult < (targetRPM - targetRPMTolerance))
+  {
+    Serial.println("+");
+    automaticThrottleValue += RPMAutomaticAdjustStep;
+    debugAdjustRPM++;
+    numTooHigh = 0;
+  }
+  else
+  {
+    numTooHigh = 0;
+    Serial.println("-OK");
+    return;
+  }
+
+  if (automaticThrottleValue < throttleClosedValue) automaticThrottleValue = throttleClosedValue;
+  if (automaticThrottleValue > throttleOpenValue) automaticThrottleValue = throttleOpenValue;
   servoT.writeMicroseconds(automaticThrottleValue);
 }
 
@@ -226,6 +273,8 @@ const float targetAsValue = c + (targetAirFuelRatio * d);
 void updateAirFuelRatio()
 {
   o2Value = analogRead(o2sensor);
+  // this is too fast: need temporal filter and averaging.
+
 
   // sensor in error? set 50/50 ratio:
   if (o2Value < 110 || o2Value > 920)
@@ -236,14 +285,13 @@ void updateAirFuelRatio()
   {
     if (o2Value > (targetAsValue + airFuelValueTolerance))
     {
-      automaticAirFuelValue -= airFuelAdjustStep;
+      automaticAirFuelValue += airFuelAdjustStep;
       debugAdjustAFR--;
     }
     else if (o2Value < (targetAsValue - airFuelValueTolerance))
     {
-      automaticAirFuelValue += airFuelAdjustStep;
+      automaticAirFuelValue -= airFuelAdjustStep;
       debugAdjustAFR++;
-      
     }
     else
     {
@@ -253,7 +301,7 @@ void updateAirFuelRatio()
 
   if (automaticAirFuelValue < airFuelOpenValue) automaticAirFuelValue = airFuelOpenValue;
   if (automaticAirFuelValue > airFuelClosedValue) automaticAirFuelValue = airFuelClosedValue;
-  servoAf.writeMicroseconds(automaticAirFuelValue);
+  //servoAf.writeMicroseconds(automaticAirFuelValue);
 }
 
 void loop()
@@ -272,9 +320,9 @@ void loop()
 
   updateAirFuelRatio();
   // for testing:
-  calculateRpm();
-
-  manualThrottleControl();
+  //calculateRpm();
+  //manualThrottleControl();
+  automaticThrottleControl();
 
   if (debugPrintEveryN > 0)
   {
@@ -283,10 +331,10 @@ void loop()
     {
       debugPrintCounter = 0;
 
-      Serial.print("o2Value:");
-      Serial.print(o2Value);
-      Serial.print(" - rpmResult:");
-      Serial.println(rpmResult);
+      // Serial.print("o2Value:");
+      // Serial.print(o2Value);
+      // Serial.print(" - rpmResult:");
+      // Serial.print(rpmResult);
       // Serial.print(" - automaticThrottleValue:");
       // Serial.print(automaticThrottleValue);
       // Serial.print(" - automaticAirFuelValue:");
