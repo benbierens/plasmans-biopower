@@ -1,30 +1,49 @@
 #include <Servo.h>
+#include <PID_v1.h>
 Servo servoAf;
 Servo servoT;
 
 #define ERRORCODE_LOOP_OVER_TIME 101
 #define ERRORCODE_RPM_EMERGENCY_STOP 102
 
-// Configuration:
-// Program loop speed: milliseconds per loop
-#define targetLoopTimeMilliseconds 100
-#define loopTimeTolerance 2
-#define debugPrintEveryN 5
+///////////////////
+// Configuration //
+///////////////////
 
 // Automatic RPM control:
 #define targetRPM 1500.0f
-#define RPMEmergencyStopThreshold 2500.0f
-#define RPMAutomaticAdjustStep 1
-#define targetRPMTolerance 5.0f
+#define RPMEmergencyStop 3000.0f
+#define NumberOfGaps 16.0f // Number of gaps per 1 full rotation.
 
 // Automatic Air/Fuel ratio control:
 #define targetAirFuelRatio 1.1f
-#define airFuelValueTolerance 5 // In range of [o2ValueMin - o2ValueMax]
-#define airFuelAdjustStep 5 // In the range of [airFuelOpenValue - airFuelClosedValue]
+#define airFuelAdjustStep 5 // Must be 1 or greater. Higher number gives stronger response. In the range of [airFuelOpenValue - airFuelClosedValue]
 
-#define potentio A2
-#define potentioMin 0
-#define potentioMax 1024
+// Infinite Response Filters
+// Values must be 2 or greater. Higher number gives slower, smoother response.
+#define rpmIRF_divisor 2
+#define airFuelIRF_divisor 2
+
+// Program loop speed: milliseconds per loop
+#define targetLoopTimeMilliseconds 100
+#define loopTimeTolerance 2
+
+////////////////////////
+// Wiring & Constants //
+////////////////////////
+#define potThrottle A2
+#define potThrottleMin 0
+#define potThrottleMax 1024
+
+#define potAirFuel A4
+#define potAirFuelMin 0
+#define potAirFuelMax 1024
+
+#define potManualAutomatic A3
+#define potManualAutomaticMin 0
+#define potManualAutomaticMax 1024
+#define potManualManualUpperThreshold 400 // Values under this = manual control
+#define potManualAutomaticLowerThreshold 624 // Values above this = automatic control
 
 #define builtInLed 13
 #define rpmMeter A1
@@ -36,34 +55,29 @@ Servo servoT;
 #define servoAirFuel 10
 #define airFuelOpenValue 861
 #define airFuelClosedValue 2164
+#define airFuelValueTolerance 5.0f // In range of [o2ValueMin - o2ValueMax]
 
 #define servoThrottle 9
 #define throttleOpenValue 2268
 #define throttleClosedValue 1308
 
-#define NUMBEROFGAPS 16.0f
-#define MINMILLISECONDSPERGAP 0.83f
-
 int errorCode = 0;
 bool ledState = false;
-int angle, potValue = 0;
-int o2angle, o2Value = 0;
+int potValue = 0;
+float o2Value = 0.0f;
 float lastNow = 0.0f;
 float now = 0.0f;
 float millisecondsElapsed = 0.0f;
 int rpmLastState = 0;
 float rpmResult = 0.0f;
-int rpmCount = 0;
 const byte interruptPin = 2;
 volatile unsigned int gapCounter = 0;
 float gapCount = 0.0f;
 float lastGapMillis = 0.0f;
-int automaticDelay = 100;
-int automaticThrottleValue = 0;
-int automaticAirFuelValue = 0;
-int debugPrintCounter = 0;
-int debugAdjustRPM = 0;
-int debugAdjustAFR = 0;
+bool isManual = false;
+int automaticLoopDelay = 100;
+int currentThrottleValue = 0;
+int currentAirFuelValue = 0;
 
 void flipLed()
 {
@@ -81,6 +95,26 @@ void ledOff()
 {
   ledState = false;
   digitalWrite(LED_BUILTIN, ledState);
+}
+
+bool readIsManual()
+{
+  return analogRead(potManualAutomatic) < potManualManualUpperThreshold;
+}
+
+bool readIsAutomatic()
+{
+  return analogRead(potManualAutomatic) > potManualAutomaticLowerThreshold;
+}
+
+float applyIRF(float currentValue, float newValue, float div)
+{
+  return
+      // Infinite history contribution:
+      (currentValue * ((div - 1.0f) / div))
+        +
+      // Current value contribution:
+      (newValue * (1.0f / div));
 }
 
 void errorState(int error)
@@ -106,10 +140,22 @@ void startupDelay()
   }
 }
 
+void WaitUntilManual()
+{
+  while (!isManual)
+  {
+    delay(300);
+    flipLed();
+
+    isManual = readIsManual();
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
-  pinMode(potentio, INPUT);
+  pinMode(potThrottle, INPUT);
+  pinMode(potManualAutomatic, INPUT);
   pinMode(o2sensor, INPUT);
   pinMode(builtInLed, OUTPUT);
 
@@ -120,18 +166,19 @@ void setup()
   pinMode(interruptPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(interruptPin), onGapSignal, RISING);
 
-  rpmCount = 0;
   gapCounter = 0;
 
   startupDelay();
 
-  int airFuelHalf = airFuelClosedValue + ((airFuelOpenValue - airFuelClosedValue) / 2);
-  servoAf.writeMicroseconds(airFuelHalf);
-
-  automaticThrottleValue = throttleClosedValue + ((throttleOpenValue - throttleClosedValue) / 2);
-  automaticAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);
+  currentThrottleValue = throttleClosedValue + ((throttleOpenValue - throttleClosedValue) / 2);
+  currentAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);
+  servoT.writeMicroseconds(currentThrottleValue);
+  servoAf.writeMicroseconds(currentAirFuelValue);
 
   startupDelay();
+
+  WaitUntilManual();
+
   lastNow = millis();
   lastGapMillis = millis();
   now = lastNow;
@@ -147,7 +194,10 @@ void calculateRpm()
   gapCount = gapCounter;
   gapCounter = 0;
 
-  rpmResult = (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NUMBEROFGAPS;
+  rpmResult = applyIRF(
+    rpmResult,
+    (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NumberOfGaps,
+    rpmIRF_divisor);
 }
 
 void loopDelay()
@@ -157,106 +207,55 @@ void loopDelay()
   // If the millisecondsElapsed is consistently greater than the target loop duration, enter error state.
   if (millisecondsElapsed > (targetLoopTimeMilliseconds + loopTimeTolerance))
   {
-    automaticDelay--;
+    automaticLoopDelay--;
   }
   else if (millisecondsElapsed < (targetLoopTimeMilliseconds - loopTimeTolerance))
   {
-    automaticDelay++;
+    automaticLoopDelay++;
   }
 
-  if (automaticDelay < 10)
+  if (automaticLoopDelay < 10)
   {
     errorState(ERRORCODE_LOOP_OVER_TIME);
   }
 
-  delay(automaticDelay);
+  delay(automaticLoopDelay);
 }
 
 void manualThrottleControl()
 {
-  ledOn();
-
-  potValue = analogRead(potentio);
-  angle = map(potValue, potentioMin, potentioMax, throttleClosedValue, throttleOpenValue);
-  servoT.writeMicroseconds(angle);
+  potValue = analogRead(potThrottle);
+  currentThrottleValue = map(potValue, potThrottleMin, potThrottleMax, throttleClosedValue, throttleOpenValue);
 }
 
-int numTooHigh = 0;
-int i = 0;
+void manualAirFuelRatioControl()
+{
+  potValue = analogRead(potAirFuel);
+  currentAirFuelValue = map(potValue, potAirFuelMin, potAirFuelMax, airFuelClosedValue, airFuelOpenValue);
+}
+
+double pid_diff = 0.0;
+double pid_driverOut = 0.0;
+double pid_setPoint = targetRPM;
+int pid_Kp = 2; // Contribution of immediate error to control output.
+int pid_Ki = 3; // Contribution of integral (history of error over time) error to control output.
+int pid_Kd = 1; // Contribution of differential (rate of change of error over time) error to the control output.
+
+PID throttlePid(&pid_diff, &pid_driverOut, &pid_setPoint, pid_Kp, pid_Ki, pid_Kd, DIRECT);
 
 void automaticThrottleControl()
 {
-  ledOff();
-// 15.5 - 16
-  calculateRpm();
-
-  
-  Serial.print("rpm:");
-  Serial.print(rpmResult);
-
-  i++;
-  if (i >= 10)
+  if (rpmResult > RPMEmergencyStop)
   {
-    i = 0;
-    if (rpmResult < 2)
-    {
-      Serial.println("*");
-      return;
-    }
-  }
-  else
-  {
-    Serial.println("*");
-    return;
+    servoT.writeMicroseconds(throttleClosedValue);
+    errorState(ERRORCODE_RPM_EMERGENCY_STOP);
   }
 
-  if (rpmResult > RPMEmergencyStopThreshold)
+  pid_diff = rpmResult;
+  if (throttlePid.Compute())
   {
-    Serial.println("-toohigh");
-    automaticThrottleValue -= (RPMAutomaticAdjustStep * 60);
-    numTooHigh++;
-    if (numTooHigh > 5)
-    {
-      servoT.writeMicroseconds(throttleClosedValue);
-      errorState(ERRORCODE_RPM_EMERGENCY_STOP);
-    }
+    currentThrottleValue = pid_driverOut;
   }
-  else if (rpmResult > (targetRPM + 500 + targetRPMTolerance))
-  {
-    Serial.println("-!");
-    automaticThrottleValue -= (RPMAutomaticAdjustStep * 2);
-    debugAdjustRPM--;
-  }
-  else if (rpmResult < (targetRPM - 500 - targetRPMTolerance))
-  {
-    Serial.println("+!");
-    automaticThrottleValue += (RPMAutomaticAdjustStep);
-    debugAdjustRPM++;
-  }
-  else if (rpmResult > (targetRPM + targetRPMTolerance))
-  {
-    Serial.println("-");
-    automaticThrottleValue -= RPMAutomaticAdjustStep;
-    debugAdjustRPM--;
-    numTooHigh = 0;
-  }
-  else if (rpmResult < (targetRPM - targetRPMTolerance))
-  {
-    Serial.println("+");
-    automaticThrottleValue += RPMAutomaticAdjustStep;
-    debugAdjustRPM++;
-    numTooHigh = 0;
-  }
-  else
-  {
-    numTooHigh = 0;
-    Serial.println("-OK");
-    return;
-  }
-
-  if (automaticThrottleValue < throttleClosedValue) automaticThrottleValue = throttleClosedValue;
-  if (automaticThrottleValue > throttleOpenValue) automaticThrottleValue = throttleOpenValue;
-  servoT.writeMicroseconds(automaticThrottleValue);
 }
 
 // voltages of O2 sensor follow linear function:
@@ -270,38 +269,33 @@ const float c = -629.692f;
 const float d = (820.0f / 0.65f);
 const float targetAsValue = c + (targetAirFuelRatio * d);
 
-void updateAirFuelRatio()
+void calculateO2Value()
 {
-  o2Value = analogRead(o2sensor);
-  // this is too fast: need temporal filter and averaging.
+  o2Value = applyIRF(o2Value, analogRead(o2sensor), airFuelIRF_divisor);
+}
 
-
+void automaticAirFuelRatioControl()
+{
   // sensor in error? set 50/50 ratio:
-  if (o2Value < 110 || o2Value > 920)
+  if (o2Value < 110.0f || o2Value > 920.0f)
   {
-    automaticAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
+    currentAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
   }
   else
   {
     if (o2Value > (targetAsValue + airFuelValueTolerance))
     {
-      automaticAirFuelValue += airFuelAdjustStep;
-      debugAdjustAFR--;
+      currentAirFuelValue += airFuelAdjustStep;
     }
     else if (o2Value < (targetAsValue - airFuelValueTolerance))
     {
-      automaticAirFuelValue -= airFuelAdjustStep;
-      debugAdjustAFR++;
+      currentAirFuelValue -= airFuelAdjustStep;
     }
     else
     {
       return;
     }
   }
-
-  if (automaticAirFuelValue < airFuelOpenValue) automaticAirFuelValue = airFuelOpenValue;
-  if (automaticAirFuelValue > airFuelClosedValue) automaticAirFuelValue = airFuelClosedValue;
-  //servoAf.writeMicroseconds(automaticAirFuelValue);
 }
 
 void loop()
@@ -318,35 +312,34 @@ void loop()
   }
   loopDelay();
 
-  updateAirFuelRatio();
-  // for testing:
-  //calculateRpm();
-  //manualThrottleControl();
-  automaticThrottleControl();
+  // Calculated RPM and O2 values are not used in manual mode, but we calculate them anyway, because:
+  // - Registers may reach overflow if calculation is not frequently performed.
+  // - When switching from manual to automatic, IRFs must be already initialized with accurate values.
+  calculateRpm();
+  calculateO2Value();
 
-  if (debugPrintEveryN > 0)
+  if (isManual)
   {
-    debugPrintCounter++;
-    if (debugPrintCounter >= debugPrintEveryN)
-    {
-      debugPrintCounter = 0;
+    manualThrottleControl();
+    manualAirFuelRatioControl();
 
-      // Serial.print("o2Value:");
-      // Serial.print(o2Value);
-      // Serial.print(" - rpmResult:");
-      // Serial.print(rpmResult);
-      // Serial.print(" - automaticThrottleValue:");
-      // Serial.print(automaticThrottleValue);
-      // Serial.print(" - automaticAirFuelValue:");
-      // Serial.print(automaticAirFuelValue);
-      // Serial.print(" - automaticDelay:");
-      // Serial.print(automaticDelay);
-      // Serial.print(" - debugAdjustRPM:");
-      // Serial.print(debugAdjustRPM);
-      // Serial.print(" - debugAdjustAFR:");
-      // Serial.println(debugAdjustAFR);
-    }
+    ledOn();
+    isManual = !readIsAutomatic();
+  }
+  else
+  {
+    automaticThrottleControl();
+    automaticAirFuelRatioControl();
+
+    ledOff();
+    isManual = readIsManual();
   }
 
-  //3600 rpm
+  // Send updates to servos:
+  if (currentAirFuelValue < airFuelOpenValue) currentAirFuelValue = airFuelOpenValue;
+  if (currentAirFuelValue > airFuelClosedValue) currentAirFuelValue = airFuelClosedValue;
+  servoAf.writeMicroseconds(currentAirFuelValue);
+  if (currentThrottleValue < throttleClosedValue) currentThrottleValue = throttleClosedValue;
+  if (currentThrottleValue > throttleOpenValue) currentThrottleValue = throttleOpenValue;
+  servoT.writeMicroseconds(currentThrottleValue);
 }
