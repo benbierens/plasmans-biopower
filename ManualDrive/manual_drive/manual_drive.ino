@@ -14,10 +14,14 @@ Servo servoT;
 #define targetRPM 1500.0f
 #define RPMEmergencyStop 3000.0f
 #define NumberOfGaps 16.0f // Number of gaps per 1 full rotation.
+// PID-parameters:
+#define pid_Kp 2 // Contribution of immediate error to control output.
+#define pid_Ki 3 // Contribution of integral error (history of error over time) to control output.
+#define pid_Kd 1 // Contribution of differential error (rate of change of error over time) to the control output.
 
 // Automatic Air/Fuel ratio control:
 #define targetAirFuelRatio 1.1f
-#define airFuelAdjustStep 5 // Must be 1 or greater. Higher number gives stronger response. In the range of [airFuelOpenValue - airFuelClosedValue]
+#define airFuelAdjustStep 5 // Must be 1 or greater. Higher number gives larger response step. In the range of [airFuelOpenValue - airFuelClosedValue]
 
 // Infinite Response Filters
 // Values must be 2 or greater. Higher number gives slower, smoother response.
@@ -27,6 +31,15 @@ Servo servoT;
 // Program loop speed: milliseconds per loop
 #define targetLoopTimeMilliseconds 100
 #define loopTimeTolerance 2
+
+///////////
+// Debug //
+///////////
+
+// #define _DEBUG_
+#ifdef _DEBUG_
+#define _DEBUG_N 10
+#endif
 
 ////////////////////////
 // Wiring & Constants //
@@ -78,6 +91,39 @@ bool isManual = false;
 int automaticLoopDelay = 100;
 int currentThrottleValue = 0;
 int currentAirFuelValue = 0;
+#ifdef _DEBUG_
+int debug_n = 0;
+
+void log_debug(String s)
+{
+  if (debug_n != 0) return;
+  Serial.print(s);
+  Serial.print(" - ");
+}
+
+void log_debug_float(String s, float f)
+{
+  if (debug_n != 0) return;
+  Serial.print(s);
+  Serial.print(f);
+  Serial.print(" - ");
+}
+
+void log_debug_double(String s, double d)
+{
+  if (debug_n != 0) return;
+  Serial.print(s);
+  Serial.print(d);
+  Serial.print(" - ");
+}
+
+void log_debug_line()
+{
+  if (debug_n != 0) return;
+  Serial.println("");
+}
+
+#endif
 
 void flipLed()
 {
@@ -149,6 +195,11 @@ void WaitUntilManual()
 
     isManual = readIsManual();
   }
+
+#ifdef _DEBUG_
+  log_debug("WaitUntilManual: Finshed!");
+  log_debug_line();
+#endif
 }
 
 void setup()
@@ -198,6 +249,10 @@ void calculateRpm()
     rpmResult,
     (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NumberOfGaps,
     rpmIRF_divisor);
+
+#ifdef _DEBUG_
+  log_debug_float("RPM:", rpmResult);
+#endif
 }
 
 void loopDelay()
@@ -213,6 +268,13 @@ void loopDelay()
   {
     automaticLoopDelay++;
   }
+
+#ifdef _DEBUG_
+  if (automaticLoopDelay < 25)
+  {
+    log_debug("Loop delay < 25");
+  }
+#endif
 
   if (automaticLoopDelay < 10)
   {
@@ -234,26 +296,35 @@ void manualAirFuelRatioControl()
   currentAirFuelValue = map(potValue, potAirFuelMin, potAirFuelMax, airFuelClosedValue, airFuelOpenValue);
 }
 
-double pid_diff = 0.0;
+double pid_input = 0.0;
 double pid_driverOut = 0.0;
 double pid_setPoint = targetRPM;
-int pid_Kp = 2; // Contribution of immediate error to control output.
-int pid_Ki = 3; // Contribution of integral (history of error over time) error to control output.
-int pid_Kd = 1; // Contribution of differential (rate of change of error over time) error to the control output.
+int rpm_emergency_timeout = 0;
 
-PID throttlePid(&pid_diff, &pid_driverOut, &pid_setPoint, pid_Kp, pid_Ki, pid_Kd, DIRECT);
+PID throttlePid(&pid_input, &pid_driverOut, &pid_setPoint, pid_Kp, pid_Ki, pid_Kd, DIRECT);
 
 void automaticThrottleControl()
 {
-  if (rpmResult > RPMEmergencyStop)
+  if (rpm_emergency_timeout <= 0)
   {
-    servoT.writeMicroseconds(throttleClosedValue);
-    errorState(ERRORCODE_RPM_EMERGENCY_STOP);
+    if (rpmResult > RPMEmergencyStop)
+    {
+      servoT.writeMicroseconds(throttleClosedValue);
+      errorState(ERRORCODE_RPM_EMERGENCY_STOP);
+    }
+  }
+  else
+  {
+    rpm_emergency_timeout--;
   }
 
-  pid_diff = rpmResult;
+  pid_input = rpmResult;
   if (throttlePid.Compute())
   {
+#ifdef _DEBUG_
+    log_debug_double("pid_input", pid_input);
+    log_debug_double("pid_driverOut", pid_driverOut);
+#endif
     currentThrottleValue = pid_driverOut;
   }
 }
@@ -279,10 +350,17 @@ void automaticAirFuelRatioControl()
   // sensor in error? set 50/50 ratio:
   if (o2Value < 110.0f || o2Value > 920.0f)
   {
+#ifdef _DEBUG_
+    log_debug("O2-sernsor-offline");
+#endif
     currentAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
   }
   else
   {
+#ifdef _DEBUG_
+    log_debug_float("o2Value", o2Value);
+    log_debug_float("targetAsValue", targetAsValue);
+#endif
     if (o2Value > (targetAsValue + airFuelValueTolerance))
     {
       currentAirFuelValue += airFuelAdjustStep;
@@ -320,14 +398,25 @@ void loop()
 
   if (isManual)
   {
+  #ifdef _DEBUG_
+    log_debug("M");
+  #endif
     manualThrottleControl();
     manualAirFuelRatioControl();
 
     ledOn();
     isManual = !readIsAutomatic();
+    if (!isManual)
+    {
+      // When switching to automatic, we disable rpm_emergency_stop for a short duration.
+      rpm_emergency_timeout = (3000 / targetLoopTimeMilliseconds);
+    }
   }
   else
   {
+  #ifdef _DEBUG_
+    log_debug("A");
+  #endif
     automaticThrottleControl();
     automaticAirFuelRatioControl();
 
@@ -342,4 +431,10 @@ void loop()
   if (currentThrottleValue < throttleClosedValue) currentThrottleValue = throttleClosedValue;
   if (currentThrottleValue > throttleOpenValue) currentThrottleValue = throttleOpenValue;
   servoT.writeMicroseconds(currentThrottleValue);
+
+  #ifdef _DEBUG_
+  log_debug_line();
+  debug_n++;
+  if (debug_n >= _DEBUG_N) debug_n = 0;
+  #endif
 }
