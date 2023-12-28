@@ -59,7 +59,7 @@ Servo servoT;
 #define potManualAutomaticLowerThreshold 624 // Values above this = automatic control
 
 #define builtInLed 13
-#define rpmMeter A1
+#define rpmInterruptPin 2
 
 #define o2sensor A0
 #define o2ValueMin 0
@@ -213,9 +213,8 @@ void setup()
   servoAf.attach(servoAirFuel);
   servoT.attach(servoThrottle);
 
-  pinMode(rpmMeter, INPUT);
-  pinMode(interruptPin, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(interruptPin), onGapSignal, RISING);
+  pinMode(rpmInterruptPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(rpmInterruptPin), onGapSignal, RISING);
 
   gapCounter = 0;
 
