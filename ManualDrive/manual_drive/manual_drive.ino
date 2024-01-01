@@ -202,6 +202,13 @@ void WaitUntilManual()
 #endif
 }
 
+double pid_input = 0.0;
+double pid_driverOut = 0.0;
+double pid_setPoint = targetRPM;
+int rpm_emergency_timeout = 0;
+
+PID throttlePid(&pid_input, &pid_driverOut, &pid_setPoint, pid_Kp, pid_Ki, pid_Kd, DIRECT);
+
 void setup()
 {
   Serial.begin(115200);
@@ -217,6 +224,8 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(rpmInterruptPin), onGapSignal, RISING);
 
   gapCounter = 0;
+  throttlePid.SetOutputLimits(throttleClosedValue, throttleOpenValue);
+  throttlePid.SetMode(AUTOMATIC); 
 
   startupDelay();
 
@@ -294,13 +303,6 @@ void manualAirFuelRatioControl()
   potValue = analogRead(potAirFuel);
   currentAirFuelValue = map(potValue, potAirFuelMin, potAirFuelMax, airFuelClosedValue, airFuelOpenValue);
 }
-
-double pid_input = 0.0;
-double pid_driverOut = 0.0;
-double pid_setPoint = targetRPM;
-int rpm_emergency_timeout = 0;
-
-PID throttlePid(&pid_input, &pid_driverOut, &pid_setPoint, pid_Kp, pid_Ki, pid_Kd, DIRECT);
 
 void automaticThrottleControl()
 {
