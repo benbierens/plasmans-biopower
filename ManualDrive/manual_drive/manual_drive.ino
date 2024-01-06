@@ -11,13 +11,13 @@ Servo servoT;
 ///////////////////
 
 // Automatic RPM control:
-#define targetRPM 1500.0f
-#define RPMEmergencyStop 3000.0f
+#define targetRPM 2000.0f
+#define RPMEmergencyStop 3500.0f
 #define NumberOfGaps 16.0f // Number of gaps per 1 full rotation.
 // PID-parameters:
-#define pid_Kp 2 // Contribution of immediate error to control output.
+#define pid_Kp 4 // Contribution of immediate error to control output.
 #define pid_Ki 3 // Contribution of integral error (history of error over time) to control output.
-#define pid_Kd 1 // Contribution of differential error (rate of change of error over time) to the control output.
+#define pid_Kd 3 // Contribution of differential error (rate of change of error over time) to the control output.
 
 // Automatic Air/Fuel ratio control:
 #define targetAirFuelRatio 1.1f
@@ -25,20 +25,21 @@ Servo servoT;
 
 // Infinite Response Filters
 // Values must be 2 or greater. Higher number gives slower, smoother response.
-#define rpmIRF_divisor 2
-#define airFuelIRF_divisor 2
+#define rpmIRF_divisor (7.0f * 5.0f)
+#define rpmIRF_post_divisor (105.0f * 5.0f)
+#define airFuelIRF_divisor (2.0f * 5.0f)
 
 // Program loop speed: milliseconds per loop
-#define targetLoopTimeMilliseconds 100
+#define targetLoopTimeMilliseconds 20
 #define loopTimeTolerance 2
 
 ///////////
 // Debug //
 ///////////
 
-// #define _DEBUG_
+#define _DEBUG_
 #ifdef _DEBUG_
-#define _DEBUG_N 10
+#define _DEBUG_N 20
 #endif
 
 ////////////////////////
@@ -48,7 +49,7 @@ Servo servoT;
 #define potThrottleMin 0
 #define potThrottleMax 1024
 
-#define potAirFuel A4
+#define potAirFuel A1
 #define potAirFuelMin 0
 #define potAirFuelMax 1024
 
@@ -77,12 +78,14 @@ Servo servoT;
 int errorCode = 0;
 bool ledState = false;
 int potValue = 0;
+int potValue2 = 0;
 float o2Value = 0.0f;
 float lastNow = 0.0f;
 float now = 0.0f;
 float millisecondsElapsed = 0.0f;
 int rpmLastState = 0;
 float rpmResult = 0.0f;
+float rpmNewValue = 0.0f;
 const byte interruptPin = 2;
 volatile unsigned int gapCounter = 0;
 float gapCount = 0.0f;
@@ -98,6 +101,14 @@ void log_debug(String s)
 {
   if (debug_n != 0) return;
   Serial.print(s);
+  Serial.print(" - ");
+}
+
+void log_debug_int(String s, int i)
+{
+  if (debug_n != 0) return;
+  Serial.print(s);
+  Serial.print(i);
   Serial.print(" - ");
 }
 
@@ -155,12 +166,16 @@ bool readIsAutomatic()
 
 float applyIRF(float currentValue, float newValue, float div)
 {
-  return
+  float result = 
       // Infinite history contribution:
       (currentValue * ((div - 1.0f) / div))
         +
       // Current value contribution:
       (newValue * (1.0f / div));
+
+  if (isnan(result)) return 0.0f;
+  if (isinf(result)) return 0.0f;
+  return result;
 }
 
 void errorState(int error)
@@ -229,8 +244,8 @@ void setup()
 
   startupDelay();
 
-  currentThrottleValue = throttleClosedValue + ((throttleOpenValue - throttleClosedValue) / 2);
-  currentAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);
+  currentThrottleValue = 1590; // throttleClosedValue + ((throttleOpenValue - throttleClosedValue) / 2);
+  currentAirFuelValue = 1650; // airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);
   servoT.writeMicroseconds(currentThrottleValue);
   servoAf.writeMicroseconds(currentAirFuelValue);
 
@@ -253,13 +268,17 @@ void calculateRpm()
   gapCount = gapCounter;
   gapCounter = 0;
 
+  rpmNewValue = (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NumberOfGaps;
+
   rpmResult = applyIRF(
     rpmResult,
-    (60.0f * (gapCount * (1000.0f / millisecondsElapsed))) / NumberOfGaps,
+    rpmNewValue,
     rpmIRF_divisor);
 
 #ifdef _DEBUG_
   log_debug_float("RPM:", rpmResult);
+  log_debug_float("RPM-new:", rpmNewValue);  // was inf
+  log_debug_int("RPM-count:", gapCounter);
 #endif
 }
 
@@ -278,13 +297,14 @@ void loopDelay()
   }
 
 #ifdef _DEBUG_
-  if (automaticLoopDelay < 25)
+  if (automaticLoopDelay < 5)
   {
-    log_debug("Loop delay < 25");
+    log_debug("Loop delay < 5");
   }
+  log_debug_int("delay:", automaticLoopDelay);
 #endif
 
-  if (automaticLoopDelay < 10)
+  if (automaticLoopDelay < 3)
   {
     errorState(ERRORCODE_LOOP_OVER_TIME);
   }
@@ -295,13 +315,13 @@ void loopDelay()
 void manualThrottleControl()
 {
   potValue = analogRead(potThrottle);
-  currentThrottleValue = map(potValue, potThrottleMin, potThrottleMax, throttleClosedValue, throttleOpenValue);
+  currentThrottleValue = map(potValue, potThrottleMin, potThrottleMax, throttleOpenValue, throttleClosedValue);
 }
 
 void manualAirFuelRatioControl()
 {
-  potValue = analogRead(potAirFuel);
-  currentAirFuelValue = map(potValue, potAirFuelMin, potAirFuelMax, airFuelClosedValue, airFuelOpenValue);
+  potValue2 = analogRead(potAirFuel);
+  currentAirFuelValue = map(potValue2, potAirFuelMin, potAirFuelMax, airFuelOpenValue, airFuelClosedValue);
 }
 
 void automaticThrottleControl()
@@ -326,7 +346,7 @@ void automaticThrottleControl()
     log_debug_double("pid_input", pid_input);
     log_debug_double("pid_driverOut", pid_driverOut);
 #endif
-    currentThrottleValue = pid_driverOut;
+    currentThrottleValue = applyIRF(currentThrottleValue, pid_driverOut, rpmIRF_post_divisor);
   }
 }
 
@@ -344,6 +364,10 @@ const float targetAsValue = c + (targetAirFuelRatio * d);
 void calculateO2Value()
 {
   o2Value = applyIRF(o2Value, analogRead(o2sensor), airFuelIRF_divisor);
+
+#ifdef _DEBUG_
+  log_debug_float("O2:", o2Value);
+#endif
 }
 
 void automaticAirFuelRatioControl()
@@ -354,12 +378,11 @@ void automaticAirFuelRatioControl()
 #ifdef _DEBUG_
     log_debug("O2-sernsor-offline");
 #endif
-    currentAirFuelValue = airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
+    currentAirFuelValue = 1650; // airFuelOpenValue + ((airFuelClosedValue - airFuelOpenValue) / 2);    
   }
   else
   {
 #ifdef _DEBUG_
-    log_debug_float("o2Value", o2Value);
     log_debug_float("targetAsValue", targetAsValue);
 #endif
     if (o2Value > (targetAsValue + airFuelValueTolerance))
@@ -436,6 +459,9 @@ void loop()
   servoT.writeMicroseconds(currentThrottleValue);
 
   #ifdef _DEBUG_
+  log_debug_float("ms:", millisecondsElapsed);
+  log_debug_int("throttle:", currentThrottleValue);
+  log_debug_int("airfuel:", currentAirFuelValue);
   log_debug_line();
   debug_n++;
   if (debug_n >= _DEBUG_N) debug_n = 0;
