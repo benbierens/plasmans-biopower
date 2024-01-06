@@ -411,6 +411,8 @@ void loop()
     {
       // When switching to automatic, we disable rpm_emergency_stop for a short duration.
       rpm_emergency_timeout = (3000 / targetLoopTimeMilliseconds);
+      // And we initialize the pid driverOut value with our current throttle value.
+      pid_driverOut = currentThrottleValue;
     }
   }
   else
